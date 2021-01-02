@@ -1,0 +1,140 @@
+version: 2.1
+
+parameters:
+  trigger:
+    type: boolean
+    default: true
+  recipe-service:
+    type: boolean
+    default: false
+  traffic-generator:
+    type: boolean
+    default: false
+  training-data-generator:
+    type: boolean
+    default: false
+
+orbs:
+  digitalocean: digitalocean/cli@0.1.1
+
+executors:
+  ci:
+    docker:
+      - image: cimg/base:stable
+  build:
+    docker:
+      - image: cimg/base:stable
+  deploy:
+    docker:
+      - image: cimg/base:stable
+
+jobs:
+  trigger-workflows:
+    executor: ci
+    steps:
+      - checkout
+      - run:
+          name: Set token
+          command: |
+            echo "export CIRCLE_USER_TOKEN=${CIRCLE_TOKEN}" >> $BASH_ENV
+      - run:
+          name: Trigger workflows
+          command: chmod +x .circleci/monorepo.sh && .circleci/monorepo.sh
+
+  build:
+    parameters:      
+      package_name:
+        type: string
+    executor: build
+    steps:
+      - checkout
+      - digitalocean/install
+      - digitalocean/initialize
+      - setup_remote_docker:
+          version: 19.03.13
+      - run:
+          name: Log in to Digital Ocean Docker Registry
+          command: doctl registry login
+      - run:
+          name: Create Docker image
+          command: |
+            docker build -t sundial-<< parameters.package_name >>:${CIRCLE_SHA1} ./app/<< parameters.package_name >>
+      - run:
+          name: Push Docker image
+          command: |
+            docker tag sundial-<< parameters.package_name >>:${CIRCLE_SHA1} registry.digitalocean.com/newlinelabs/sundial-<< parameters.package_name >>:${CIRCLE_SHA1}
+            docker push registry.digitalocean.com/newlinelabs/sundial-<< parameters.package_name >>:${CIRCLE_SHA1}
+    
+  deploy:
+    parameters:
+      package_name:
+        type: string
+    executor: deploy
+    steps:
+      - checkout
+      - digitalocean/install
+      - digitalocean/initialize
+      - run:
+          name: Install Helm
+          command: |
+            if which helm > /dev/null; then
+              exit 0
+            fi
+            
+            curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+            helm version
+      - run:
+          name: Authenticate cluster
+          command: doctl kubernetes cluster kubeconfig save sundial-cluster
+      - run:
+          name: Deploy to Kubernetes
+          command: |
+            cd app/<< parameters.package_name >>/helm
+            ./install.sh
+
+workflows:
+  version: 2
+
+  ci:
+    when: << pipeline.parameters.trigger >>
+    jobs:
+      - trigger-workflows:
+          filters:
+              branches:
+                only: master
+
+  recipe-service:
+    when: << pipeline.parameters.recipe-service >>
+    jobs:
+      - build:
+          name: recipe-service-build
+          package_name: recipe-service
+      - deploy:
+          name: recipe-service-deploy
+          package_name: recipe-service
+          requires:
+            - recipe-service-build
+      
+  traffic-generator:
+    when: << pipeline.parameters.traffic-generator >>
+    jobs:
+      - build:
+          name: traffic-generator-build
+          package_name: traffic-generator
+      - deploy:
+          name: traffic-generator-deploy
+          package_name: traffic-generator
+          requires:
+            - traffic-generator-build
+
+  training-data-generator:
+    when: << pipeline.parameters.training-data-generator >>
+    jobs:
+      - build:
+          name: training-data-generator-build
+          package_name: training-data-generator
+      - deploy:
+          name: training-data-generator-deploy
+          package_name: training-data-generator
+          requires:
+            - training-data-generator-build

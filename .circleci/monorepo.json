@@ -1,0 +1,8 @@
+{
+    "pages": 1,
+    "packages": {
+      "recipe-service": ["app/recipe-service"],
+      "traffic-generator": ["app/traffic-generator"],
+      "training-data-generator": ["app/training-data-generator"]
+    }
+  }
